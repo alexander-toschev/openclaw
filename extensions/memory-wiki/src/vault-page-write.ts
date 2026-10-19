@@ -3,7 +3,11 @@ import {
   withTrailingNewline,
 } from "openclaw/plugin-sdk/memory-host-markdown";
 import { retryAsync } from "openclaw/plugin-sdk/retry-runtime";
-import { FsSafeError, root as fsRoot } from "openclaw/plugin-sdk/security-runtime";
+import {
+  extractErrorCode,
+  FsSafeError,
+  root as fsRoot,
+} from "openclaw/plugin-sdk/security-runtime";
 import { parseWikiMarkdown } from "./markdown.js";
 
 type VaultRoot = Awaited<ReturnType<typeof fsRoot>>;
@@ -12,6 +16,24 @@ type VaultRoot = Awaited<ReturnType<typeof fsRoot>>;
 // Retry only that race; symlink and path-alias failures remain fatal.
 const isConcurrentRewriteRace = (error: unknown): boolean =>
   error instanceof FsSafeError && error.code === "path-mismatch";
+
+// fs-safe's native writer records publication before verifying the renamed fd.
+// DrvFS may lose that descriptor even though the complete destination is readable.
+function isPublishedDescriptorMissing(error: unknown): boolean {
+  if (!(error instanceof FsSafeError) || error.code !== "helper-failed") {
+    return false;
+  }
+  const publication = error.details?.publication;
+  return (
+    error.details?.phase === "publish" &&
+    error.details.cleanup === undefined &&
+    typeof publication === "object" &&
+    publication !== null &&
+    "status" in publication &&
+    publication.status === "published" &&
+    extractErrorCode(error.cause) === "ENOENT"
+  );
+}
 
 export async function writeTextWithVerifiedPublication(params: {
   publish: () => Promise<unknown>;
@@ -45,7 +67,9 @@ export async function writeVerifiedVaultTextFile(params: {
     publish: () => params.vault.write(params.pagePath, params.content),
     readPublished: () => params.vault.readText(params.pagePath),
     expected: params.content,
-    shouldVerify: (error) => error instanceof FsSafeError && error.code === "not-found",
+    shouldVerify: (error) =>
+      (error instanceof FsSafeError && error.code === "not-found") ||
+      isPublishedDescriptorMissing(error),
   });
 }
 

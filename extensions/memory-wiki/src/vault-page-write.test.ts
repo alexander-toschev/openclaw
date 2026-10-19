@@ -1,7 +1,7 @@
 // Memory Wiki tests cover the shared guarded vault page write helper.
 import { FsSafeError } from "openclaw/plugin-sdk/security-runtime";
 import { describe, expect, it, vi } from "vitest";
-import { writeGuardedVaultPage } from "./vault-page-write.js";
+import { writeGuardedVaultPage, writeVerifiedVaultTextFile } from "./vault-page-write.js";
 
 type FakeVault = Parameters<typeof writeGuardedVaultPage>[0]["vault"];
 
@@ -143,4 +143,94 @@ describe("writeGuardedVaultPage", () => {
       1,
     );
   });
+});
+
+describe("writeVerifiedVaultTextFile", () => {
+  it.each([
+    {
+      name: "published ENOENT",
+      phase: "publish",
+      status: "published",
+      cause: "ENOENT",
+      text: "body",
+      recover: true,
+    },
+    {
+      name: "unpublished ENOENT",
+      phase: "publish",
+      status: "not-published",
+      cause: "ENOENT",
+      text: "body",
+      recover: false,
+    },
+    {
+      name: "indeterminate publication",
+      phase: "publish",
+      status: "indeterminate",
+      cause: "ENOENT",
+      text: "body",
+      recover: false,
+    },
+    {
+      name: "cleanup failure",
+      phase: "cleanup",
+      status: "published",
+      cause: "ENOENT",
+      text: "body",
+      recover: false,
+    },
+    {
+      name: "permission failure",
+      phase: "publish",
+      status: "published",
+      cause: "EACCES",
+      text: "body",
+      recover: false,
+    },
+    {
+      name: "content mismatch",
+      phase: "publish",
+      status: "published",
+      cause: "ENOENT",
+      text: "old body",
+      recover: false,
+    },
+    {
+      name: "unreadable destination",
+      phase: "publish",
+      status: "published",
+      cause: "ENOENT",
+      text: null,
+      recover: false,
+    },
+  ])(
+    "handles $name without hiding other write failures",
+    async ({ phase, status, cause, text, recover }) => {
+      const error = new FsSafeError("helper-failed", "staged file publish failed", {
+        cause: Object.assign(new Error("inspect staged descriptor failed"), { code: cause }),
+        details: { phase, publication: { status } },
+      });
+      const { vault } = fakeVault(
+        async () => {
+          throw error;
+        },
+        async () => {
+          if (text === null) {
+            throw new FsSafeError("not-found", "destination disappeared");
+          }
+          return text;
+        },
+      );
+      const write = writeVerifiedVaultTextFile({
+        vault,
+        pagePath: "sources/page.md",
+        content: "body",
+      });
+      if (recover) {
+        await expect(write).resolves.toBeUndefined();
+      } else {
+        await expect(write).rejects.toBe(error);
+      }
+    },
+  );
 });
